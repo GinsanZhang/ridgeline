@@ -1,0 +1,8 @@
+platform :ios, '16.0'
+
+target 'ridgeline' do
+  use_frameworks!
+
+  # 高德 3D 导航 SDK（路径规划 + 3D 地图）
+  pod 'AMapNavi'
+end

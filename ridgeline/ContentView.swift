@@ -6,75 +6,100 @@
 //
 
 import SwiftUI
-import SwiftData
 
 struct ContentView: View {
-    @Environment(\.modelContext) private var modelContext
-    @Query private var items: [Item]
-
     var body: some View {
-        NavigationViewWrapper {
-            List {
-                ForEach(items) { item in
-                    NavigationLink {
-                        Text("Item at \(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))")
-                    } label: {
-                        Text(item.timestamp, format: Date.FormatStyle(date: .numeric, time: .standard))
-                    }
-                }
-                .onDelete(perform: deleteItems)
+        TabView {
+            NavigationStack {
+                Text("地图与导航（待接入高德 SDK）")
+                    .navigationTitle("导航")
             }
-#if os(macOS)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200)
-#endif
-            .toolbar {
-#if os(iOS)
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
-                }
-#endif
-                ToolbarItem {
-                    Button(action: addItem) {
-                        Label("Add Item", systemImage: "plus")
-                    }
-                }
+            .tabItem {
+                Label("导航", systemImage: "map.fill")
             }
-        }
-    }
 
-    private func addItem() {
-        withAnimation {
-            let newItem = Item(timestamp: Date())
-            modelContext.insert(newItem)
-        }
-    }
+            NavigationStack {
+                ElevationView()
+            }
+            .tabItem {
+                Label("海拔", systemImage: "arrow.up.and.down")
+            }
 
-    private func deleteItems(offsets: IndexSet) {
-        withAnimation {
-            for index in offsets {
-                modelContext.delete(items[index])
+            NavigationStack {
+                Text("设置（待建设）")
+                    .navigationTitle("设置")
+            }
+            .tabItem {
+                Label("设置", systemImage: "gearshape.fill")
             }
         }
     }
 }
 
-fileprivate struct NavigationViewWrapper<Content: View>: View {
-    let content: () -> Content
+/// 海拔实时监测页（用于验证传感器融合，后续会升级为导航 HUD）
+struct ElevationView: View {
+    @StateObject private var monitor = AltitudeMonitor.shared
 
     var body: some View {
-#if os(macOS)
-        NavigationSplitView {
-            content()
-        } detail: {
-            Text("Select an item")
+        VStack(spacing: 20) {
+            Text("当前海拔")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+
+            Text(monitor.currentAltitude.map { String(format: "%.0f m", $0) } ?? "--")
+                .font(.system(size: 64, weight: .bold, design: .rounded))
+                .monospacedDigit()
+
+            HStack(spacing: 20) {
+                MetricView(
+                    title: "垂直速度",
+                    value: monitor.verticalSpeed.map { String(format: "%.1f m/min", $0) })
+                MetricView(
+                    title: "坡度",
+                    value: monitor.slope.map { String(format: "%.1f %%", $0) })
+                MetricView(
+                    title: "水平速度",
+                    value: monitor.horizontalSpeed.map { String(format: "%.1f m/s", $0) })
+            }
+
+            Button {
+                monitor.isTracking ? monitor.stop() : monitor.start()
+            } label: {
+                Label(monitor.isTracking ? "停止追踪" : "开始追踪",
+                      systemImage: monitor.isTracking ? "stop.circle.fill" : "play.circle.fill")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(monitor.isTracking ? .red : .green)
+
+            if monitor.isAuthorizationDenied {
+                Text("定位权限被拒绝，请在系统设置中开启")
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+            }
         }
-#else
-        content()
-#endif
+        .padding()
+        .navigationTitle("海拔")
+    }
+}
+
+private struct MetricView: View {
+    let title: String
+    let value: String?
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(value ?? "--")
+                .font(.headline)
+                .monospacedDigit()
+        }
+        .frame(maxWidth: .infinity)
     }
 }
 
 #Preview {
     ContentView()
-        .modelContainer(for: Item.self, inMemory: true)
 }
+

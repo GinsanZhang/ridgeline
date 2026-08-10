@@ -45,6 +45,11 @@
 			path = ridgelineUITests;
 			sourceTree = "<group>";
 		};
+		20E9147B3029E71400CE9009 /* docs */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = docs;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -79,6 +84,7 @@
 				20E914533029E58C00CE9009 /* ridgelineTests */,
 				20E9145D3029E58C00CE9009 /* ridgelineUITests */,
 				20E914423029E58B00CE9009 /* Products */,
+				20E9147B3029E71400CE9009 /* docs */,
 			);
 			sourceTree = "<group>";
 		};
@@ -109,6 +115,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				20E914433029E58B00CE9009 /* ridgeline */,
+				20E9147B3029E71400CE9009 /* docs */,
 			);
 			name = ridgeline;
 			packageProductDependencies = (
@@ -394,6 +401,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取当前位置海拔和计算路线爬升";
+				INFOPLIST_KEY_NSMotionUsageDescription = "用于读取气压计并计算相对高度与垂直速度";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -436,6 +445,8 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "用于获取当前位置海拔和计算路线爬升";
+				INFOPLIST_KEY_NSMotionUsageDescription = "用于读取气压计并计算相对高度与垂直速度";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
