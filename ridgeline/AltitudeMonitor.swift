@@ -1,8 +1,6 @@
 import Combine
 import CoreLocation
-#if os(iOS) || os(watchOS)
 import CoreMotion
-#endif
 import Foundation
 
 @MainActor
@@ -17,9 +15,7 @@ final class AltitudeMonitor: NSObject, ObservableObject {
     @Published private(set) var isTracking = false
 
     private let locationManager = CLLocationManager()
-#if os(iOS) || os(watchOS)
     private let altimeter = CMAltimeter()
-#endif
 
     private var trackingRequested = false
     private var gpsBaselineAltitude: Double?
@@ -59,14 +55,11 @@ final class AltitudeMonitor: NSObject, ObservableObject {
         trackingRequested = false
         isTracking = false
         locationManager.stopUpdatingLocation()
-#if os(iOS) || os(watchOS)
         altimeter.stopRelativeAltitudeUpdates()
-#endif
         resetTransientMeasurements()
     }
 
     private func startAltimeterUpdates() {
-#if os(iOS) || os(watchOS)
         guard CMAltimeter.isRelativeAltitudeAvailable() else {
             return
         }
@@ -80,7 +73,6 @@ final class AltitudeMonitor: NSObject, ObservableObject {
                 )
             }
         }
-#endif
     }
 
     private func process(relativeAltitude: Double, timestamp: TimeInterval) {
@@ -119,11 +111,7 @@ final class AltitudeMonitor: NSObject, ObservableObject {
     }
 
     private func isAuthorized(_ status: CLAuthorizationStatus) -> Bool {
-#if os(macOS)
-        status == .authorizedAlways
-#else
         status == .authorizedAlways || status == .authorizedWhenInUse
-#endif
     }
 
     private func updateAuthorizationState() {

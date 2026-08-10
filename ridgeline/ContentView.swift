@@ -11,8 +11,7 @@ struct ContentView: View {
     var body: some View {
         TabView {
             NavigationStack {
-                Text("地图与导航（待接入高德 SDK）")
-                    .navigationTitle("导航")
+                RidgeNavigationView()
             }
             .tabItem {
                 Label("导航", systemImage: "map.fill")
