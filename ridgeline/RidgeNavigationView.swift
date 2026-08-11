@@ -114,6 +114,15 @@ struct RidgeNavigationView: View {
                     .onSubmit { startPlanning() }
             }
 
+            Picker("出行方式", selection: $planner.selectedTravelMode) {
+                ForEach(RouteTravelMode.allCases) { mode in
+                    Label(mode.title, systemImage: mode.systemImage)
+                        .tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(planner.isLoading)
+
             Button(action: startPlanning) {
                 HStack {
                     if planner.isLoading {
@@ -122,7 +131,7 @@ struct RidgeNavigationView: View {
                     } else {
                         Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
                     }
-                    Text(planner.isLoading ? "正在规划…" : "Apple 地图规划路线")
+                    Text(planner.isLoading ? "正在规划…" : "规划\(planner.selectedTravelMode.title)路线")
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -194,7 +203,7 @@ struct RidgeNavigationView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(planner.routeName)
                     .font(.system(size: 16, weight: .bold, design: .rounded))
-                Text("\(isPreview ? "演示路线" : "Apple MapKit 路线") · 已完成 \(Int(progress * 100))%")
+                Text("\(isPreview ? "演示路线" : planner.selectedTravelMode.title + "路线") · 已完成 \(Int(progress * 100))%")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.25, green: 0.39, blue: 0.31))
             }

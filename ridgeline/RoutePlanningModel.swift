@@ -3,10 +3,47 @@ import CoreLocation
 import Foundation
 import MapKit
 
+enum RouteTravelMode: String, CaseIterable, Codable, Identifiable, Sendable {
+    case automobile
+    case walking
+
+    static let defaultMode: RouteTravelMode = .automobile
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .automobile: "驾车"
+        case .walking: "徒步"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .automobile: "car.fill"
+        case .walking: "figure.walk"
+        }
+    }
+
+    var transportType: MKDirectionsTransportType {
+        switch self {
+        case .automobile: .automobile
+        case .walking: .walking
+        }
+    }
+}
+
 @MainActor
 final class RoutePlanningModel: ObservableObject {
     @Published var originQuery = "四姑娘山镇"
     @Published var destinationQuery = "双桥沟"
+    @Published var selectedTravelMode = RouteTravelMode.defaultMode {
+        didSet {
+            guard selectedTravelMode != oldValue else { return }
+            clearRoute()
+            errorMessage = nil
+        }
+    }
     @Published private(set) var route: RidgeRoute?
     @Published private(set) var routeName = "规划真实路线"
     @Published private(set) var elevationSource: ElevationDataSource = .unavailable
@@ -50,7 +87,7 @@ final class RoutePlanningModel: ObservableObject {
             let request = MKDirections.Request()
             request.source = start
             request.destination = end
-            request.transportType = .walking
+            request.transportType = selectedTravelMode.transportType
             request.requestsAlternateRoutes = false
 
             let response = try await MKDirections(request: request).calculate()
@@ -81,15 +118,20 @@ final class RoutePlanningModel: ObservableObject {
                     source: profile.source,
                     instruction: instruction,
                     originQuery: origin,
-                    destinationQuery: destination
+                    destinationQuery: destination,
+                    travelMode: selectedTravelMode
                 )
             )
             try? saveCurrentRoute()
             return true
         } catch {
-            if let saved = try? loadSavedRoute(),
-               saved.originQuery == origin,
-               saved.destinationQuery == destination {
+            if shouldUseSavedRoute(for: error),
+               let saved = try? loadSavedRoute(),
+               saved.matches(
+                   originQuery: origin,
+                   destinationQuery: destination,
+                   travelMode: selectedTravelMode
+               ) {
                 apply(saved)
                 errorMessage = "在线规划失败，已加载上次保存路线"
                 return true
@@ -172,7 +214,8 @@ final class RoutePlanningModel: ObservableObject {
             source: elevationSource,
             instruction: primaryInstruction,
             originQuery: originQuery.trimmingCharacters(in: .whitespacesAndNewlines),
-            destinationQuery: destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+            destinationQuery: destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+            travelMode: selectedTravelMode
         )
         let data = try JSONEncoder().encode(saved)
         let fileManager = FileManager.default
@@ -193,21 +236,91 @@ final class RoutePlanningModel: ObservableObject {
             .appendingPathComponent("last-route.json")
     }
 
+    private func shouldUseSavedRoute(for error: Error) -> Bool {
+        if error is URLError { return true }
+        guard let mapError = error as? MKError else { return false }
+        return mapError.code == .serverFailure || mapError.code == .loadingThrottled
+    }
+
     private func localizedMessage(for error: Error) -> String {
-        switch error {
+        if let mapError = error as? MKError {
+            switch mapError.code {
+            case .directionsNotFound:
+                return noRouteMessage
+            case .placemarkNotFound:
+                return "Apple 地图无法识别起点或终点，请填写更具体的地点"
+            case .serverFailure:
+                return "Apple 地图服务暂时不可用，请稍后重试"
+            case .loadingThrottled:
+                return "路线请求过于频繁，请稍后再试"
+            default:
+                return "Apple 地图规划失败：\(mapError.localizedDescription)"
+            }
+        }
+
+        return switch error {
         case PlanningError.placeNotFound(let query): "找不到地点：\(query)"
-        case PlanningError.noRoute: "Apple 地图没有返回可用路线"
+        case PlanningError.noRoute: noRouteMessage
         default: "路线规划失败：\(error.localizedDescription)"
         }
     }
 
-    private struct SavedRoute: Codable, Sendable {
+    private var noRouteMessage: String {
+        "Apple 地图未提供从该起点到终点的\(selectedTravelMode.title)路线；可尝试切换出行方式或填写更具体的地点"
+    }
+
+    struct SavedRoute: Codable, Sendable {
         let route: RidgeRoute
         let name: String
         let source: ElevationDataSource
         let instruction: String
         let originQuery: String
         let destinationQuery: String
+        let travelMode: RouteTravelMode
+
+        init(
+            route: RidgeRoute,
+            name: String,
+            source: ElevationDataSource,
+            instruction: String,
+            originQuery: String,
+            destinationQuery: String,
+            travelMode: RouteTravelMode
+        ) {
+            self.route = route
+            self.name = name
+            self.source = source
+            self.instruction = instruction
+            self.originQuery = originQuery
+            self.destinationQuery = destinationQuery
+            self.travelMode = travelMode
+        }
+
+        func matches(
+            originQuery: String,
+            destinationQuery: String,
+            travelMode: RouteTravelMode
+        ) -> Bool {
+            self.originQuery == originQuery
+                && self.destinationQuery == destinationQuery
+                && self.travelMode == travelMode
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            route = try container.decode(RidgeRoute.self, forKey: .route)
+            name = try container.decode(String.self, forKey: .name)
+            source = try container.decode(ElevationDataSource.self, forKey: .source)
+            instruction = try container.decode(String.self, forKey: .instruction)
+            originQuery = try container.decode(String.self, forKey: .originQuery)
+            destinationQuery = try container.decode(String.self, forKey: .destinationQuery)
+            // All caches from the previous release were produced by the
+            // formerly hard-coded walking request.
+            travelMode = try container.decodeIfPresent(
+                RouteTravelMode.self,
+                forKey: .travelMode
+            ) ?? .walking
+        }
     }
 
     private enum PlanningError: Error {

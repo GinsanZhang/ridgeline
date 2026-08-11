@@ -1,8 +1,48 @@
 import CoreLocation
+import MapKit
 import XCTest
 @testable import ridgeline
 
 final class RoutePresentationTests: XCTestCase {
+    func testTravelModesDefaultToDrivingAndMapToMapKit() {
+        XCTAssertEqual(RouteTravelMode.defaultMode, .automobile)
+        XCTAssertEqual(RouteTravelMode.automobile.transportType, .automobile)
+        XCTAssertEqual(RouteTravelMode.walking.transportType, .walking)
+        XCTAssertEqual(RouteTravelMode.automobile.title, "驾车")
+        XCTAssertEqual(RouteTravelMode.walking.title, "徒步")
+    }
+
+    func testSavedRouteMigratesLegacyCacheAsWalkingAndMatchesMode() throws {
+        let legacy = LegacySavedRoute(
+            route: RidgeRoute(points: [
+                RoutePoint(latitude: 31, longitude: 102, elevation: 2_000)
+            ]),
+            name: "旧徒步路线",
+            source: .offlineDEM,
+            instruction: "向前",
+            originQuery: "成都",
+            destinationQuery: "喜马拉雅"
+        )
+
+        let data = try JSONEncoder().encode(legacy)
+        let saved = try JSONDecoder().decode(
+            RoutePlanningModel.SavedRoute.self,
+            from: data
+        )
+
+        XCTAssertEqual(saved.travelMode, .walking)
+        XCTAssertTrue(saved.matches(
+            originQuery: "成都",
+            destinationQuery: "喜马拉雅",
+            travelMode: .walking
+        ))
+        XCTAssertFalse(saved.matches(
+            originQuery: "成都",
+            destinationQuery: "喜马拉雅",
+            travelMode: .automobile
+        ))
+    }
+
     func testElevationBandUsesMountainTerrainThresholds() {
         XCTAssertEqual(ElevationBand.band(for: 2_199), .forest)
         XCTAssertEqual(ElevationBand.band(for: 2_200), .meadow)
@@ -146,4 +186,12 @@ final class RoutePresentationTests: XCTestCase {
         XCTAssertEqual(route.remainingAscent(at: 0), 600, accuracy: 0.1)
         XCTAssertEqual(route.remainingAscent(at: 1), 0, accuracy: 0.1)
     }
+}
+private struct LegacySavedRoute: Codable {
+    let route: RidgeRoute
+    let name: String
+    let source: ElevationDataSource
+    let instruction: String
+    let originQuery: String
+    let destinationQuery: String
 }
