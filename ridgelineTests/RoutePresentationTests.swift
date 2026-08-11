@@ -1,3 +1,4 @@
+import CoreLocation
 import XCTest
 @testable import ridgeline
 
@@ -43,6 +44,73 @@ final class RoutePresentationTests: XCTestCase {
 
         XCTAssertEqual(midpoint.longitude, 0.0055, accuracy: 0.0001)
         XCTAssertEqual(midpoint.elevation, 2_550, accuracy: 10)
+    }
+
+    func testElevationProfileSamplesByDistanceAndPrefersOfflineElevation() {
+        let coordinates = [
+            CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            CLLocationCoordinate2D(latitude: 0, longitude: 0.01)
+        ]
+        let builder = ElevationProfileBuilder(sampleSpacing: 250)
+
+        let result = builder.build(coordinates: coordinates) { coordinate in
+            Int16((coordinate.longitude * 100_000).rounded())
+        }
+
+        XCTAssertGreaterThan(result.points.count, 3)
+        XCTAssertEqual(result.source, .offlineDEM)
+        XCTAssertEqual(result.points.first?.elevation, 0)
+        XCTAssertEqual(result.points.last?.elevation, 1_000)
+    }
+
+    func testElevationProfileReportsUnavailableWhenNoHGTMatches() {
+        let coordinates = [
+            CLLocationCoordinate2D(latitude: 31, longitude: 102),
+            CLLocationCoordinate2D(latitude: 31.001, longitude: 102.001)
+        ]
+        let builder = ElevationProfileBuilder(sampleSpacing: 50)
+
+        let result = builder.build(coordinates: coordinates) { _ in nil }
+
+        XCTAssertEqual(result.source, .unavailable)
+        XCTAssertFalse(result.points.isEmpty)
+    }
+
+    func testPartialHGTIsNotCompleteElevation() {
+        let coordinates = [
+            CLLocationCoordinate2D(latitude: 0, longitude: 0),
+            CLLocationCoordinate2D(latitude: 0, longitude: 0.001)
+        ]
+        let builder = ElevationProfileBuilder(sampleSpacing: 50)
+
+        let result = builder.build(coordinates: coordinates) { coordinate in
+            coordinate.longitude == 0 ? 100 : nil
+        }
+
+        XCTAssertEqual(result.source, .partialDEM)
+        XCTAssertFalse(result.hasCompleteElevation)
+    }
+
+    func testHGTFileValidatorRejectsWrongNameAndSize() {
+        XCTAssertTrue(HGTFileValidator.isValid(
+            fileName: "N31E102.hgt",
+            byteCount: HGTFileValidator.expectedByteCount
+        ))
+        XCTAssertFalse(HGTFileValidator.isValid(
+            fileName: "mountain.hgt",
+            byteCount: HGTFileValidator.expectedByteCount
+        ))
+        XCTAssertFalse(HGTFileValidator.isValid(
+            fileName: "N31E102.hgt",
+            byteCount: 42
+        ))
+    }
+
+    func testDuplicateTileNamesUseLastFileWithoutCrashing() {
+        let bundled = URL(fileURLWithPath: "/Bundle/N31E102.hgt")
+        let imported = URL(fileURLWithPath: "/Documents/N31E102.hgt")
+
+        XCTAssertNoThrow(HGTElevationStore(fileURLs: [bundled, imported]))
     }
 
     func testRemainingAscentSumsOnlyUphillSections() {

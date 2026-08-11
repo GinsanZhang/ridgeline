@@ -1,8 +1,11 @@
 import MapKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct RidgeNavigationView: View {
+    @StateObject private var planner = RoutePlanningModel()
     @State private var progress = 0.37
+    @State private var isImportingHGT = false
     @State private var cameraPosition: MapCameraPosition = .region(
         MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 31.137, longitude: 102.916),
@@ -10,7 +13,17 @@ struct RidgeNavigationView: View {
         )
     )
 
-    private let route = RidgeRoute.previewSiguniangshan
+    private var route: RidgeRoute {
+        planner.route ?? .previewSiguniangshan
+    }
+
+    private var isPreview: Bool {
+        planner.route == nil
+    }
+
+    private var hasElevationData: Bool {
+        isPreview || planner.elevationSource == .offlineDEM
+    }
 
     private var currentPoint: RoutePoint {
         route.sample(at: progress)
@@ -25,7 +38,8 @@ struct RidgeNavigationView: View {
             routeMap
                 .ignoresSafeArea(edges: .top)
 
-            VStack(spacing: 0) {
+            VStack(spacing: 10) {
+                routePlannerCard
                 mapHeader
                 Spacer()
             }
@@ -35,6 +49,14 @@ struct RidgeNavigationView: View {
             routeSheet
         }
         .background(Color(red: 0.86, green: 0.89, blue: 0.83))
+        .fileImporter(
+            isPresented: $isImportingHGT,
+            allowedContentTypes: [.data],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first else { return }
+            Task { await planner.importHGT(from: url) }
+        }
     }
 
     private var routeMap: some View {
@@ -43,16 +65,19 @@ struct RidgeNavigationView: View {
                 let start = route.points[index]
                 let end = route.points[index + 1]
                 let band = ElevationBand.band(for: (start.elevation + end.elevation) / 2)
+                let routeColor = isPreview || planner.elevationSource == .offlineDEM
+                    ? band.color
+                    : Color.blue
 
                 MapPolyline(coordinates: [start.coordinate, end.coordinate])
                     .stroke(.white.opacity(0.88), lineWidth: 10)
 
                 MapPolyline(coordinates: [start.coordinate, end.coordinate])
-                    .stroke(band.color, lineWidth: 6)
+                    .stroke(routeColor, lineWidth: 6)
             }
 
             Annotation("当前位置", coordinate: currentPoint.coordinate, anchor: .bottom) {
-                CurrentAltitudeMarker(band: currentBand)
+                CurrentAltitudeMarker(color: hasElevationData ? currentBand.color : .blue)
             }
         }
         .mapStyle(.standard(elevation: .realistic, emphasis: .muted))
@@ -62,12 +87,114 @@ struct RidgeNavigationView: View {
         }
     }
 
+    private var routePlannerCard: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Label("起", systemImage: "circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.green)
+                TextField("起点", text: $planner.originQuery)
+                    .textInputAutocapitalization(.never)
+                    .submitLabel(.next)
+                Button {
+                    planner.originQuery = "当前位置"
+                } label: {
+                    Image(systemName: "location.fill")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("使用当前位置")
+            }
+            HStack(spacing: 8) {
+                Label("终", systemImage: "mappin.circle.fill")
+                    .labelStyle(.iconOnly)
+                    .foregroundStyle(.red)
+                TextField("终点", text: $planner.destinationQuery)
+                    .textInputAutocapitalization(.never)
+                    .submitLabel(.route)
+                    .onSubmit { startPlanning() }
+            }
+
+            Button(action: startPlanning) {
+                HStack {
+                    if planner.isLoading {
+                        ProgressView()
+                            .tint(.white)
+                    } else {
+                        Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                    }
+                    Text(planner.isLoading ? "正在规划…" : "Apple 地图规划路线")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(Color(red: 0.12, green: 0.32, blue: 0.25))
+            .disabled(planner.isLoading)
+
+            Button {
+                isImportingHGT = true
+            } label: {
+                Label("导入离线 HGT 高程", systemImage: "square.and.arrow.down")
+                    .font(.caption.bold())
+            }
+            .buttonStyle(.plain)
+
+            if let message = planner.importedTileMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.green)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let error = planner.errorMessage {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .textFieldStyle(.roundedBorder)
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func startPlanning() {
+        Task {
+            let success = await planner.planRoute()
+            guard success else { return }
+            progress = 0
+            focusOnRoute()
+        }
+    }
+
+    private func focusOnRoute() {
+        let latitudes = route.points.map(\.latitude)
+        let longitudes = route.points.map(\.longitude)
+        guard let minLatitude = latitudes.min(),
+              let maxLatitude = latitudes.max(),
+              let minLongitude = longitudes.min(),
+              let maxLongitude = longitudes.max()
+        else { return }
+
+        cameraPosition = .region(
+            MKCoordinateRegion(
+                center: CLLocationCoordinate2D(
+                    latitude: (minLatitude + maxLatitude) / 2,
+                    longitude: (minLongitude + maxLongitude) / 2
+                ),
+                span: MKCoordinateSpan(
+                    latitudeDelta: max((maxLatitude - minLatitude) * 1.35, 0.01),
+                    longitudeDelta: max((maxLongitude - minLongitude) * 1.35, 0.01)
+                )
+            )
+        )
+    }
+
     private var mapHeader: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("四姑娘山 · 海子沟")
+                Text(planner.routeName)
                     .font(.system(size: 16, weight: .bold, design: .rounded))
-                Text("演示路线 · 已完成 \(Int(progress * 100))%")
+                Text("\(isPreview ? "演示路线" : "Apple MapKit 路线") · 已完成 \(Int(progress * 100))%")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(Color(red: 0.25, green: 0.39, blue: 0.31))
             }
@@ -79,12 +206,7 @@ struct RidgeNavigationView: View {
 
             Button {
                 withAnimation(.easeInOut(duration: 0.35)) {
-                    cameraPosition = .region(
-                        MKCoordinateRegion(
-                            center: CLLocationCoordinate2D(latitude: 31.137, longitude: 102.916),
-                            span: MKCoordinateSpan(latitudeDelta: 0.11, longitudeDelta: 0.11)
-                        )
-                    )
+                    focusOnRoute()
                 }
             } label: {
                 Image(systemName: "location.fill")
@@ -108,7 +230,7 @@ struct RidgeNavigationView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("地图与山脊，同步向前")
                         .font(.system(size: 20, weight: .heavy, design: .rounded))
-                    Text("拖动曲线游标，地图定位点同步移动")
+                    Text("拖动曲线游标，地图定位点同步移动 · \(isPreview ? "演示高程" : planner.elevationSource.title)")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
@@ -116,18 +238,28 @@ struct RidgeNavigationView: View {
                 Spacer()
 
                 VStack(alignment: .trailing, spacing: 4) {
-                    Text(currentPoint.elevation, format: .number.precision(.fractionLength(0)))
+                    Text(hasElevationData ? "\(Int(currentPoint.elevation))" : "--")
                         .font(.system(size: 28, weight: .black, design: .monospaced))
-                    Label("\(currentBand.title) · 米", systemImage: "circle.fill")
+                    Label(hasElevationData ? "\(currentBand.title) · 米" : "请导入对应 HGT", systemImage: "circle.fill")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(currentBand.color)
                 }
             }
             .padding(.top, 10)
 
-            ElevationProfileView(route: route, progress: $progress)
-                .frame(height: 112)
-                .padding(.top, 6)
+            Group {
+                if hasElevationData {
+                    ElevationProfileView(route: route, progress: $progress)
+                } else {
+                    ContentUnavailableView(
+                        "缺少离线高程",
+                        systemImage: "mountain.2",
+                        description: Text("将路线区域的 .hgt 文件放入 App 文稿目录")
+                    )
+                }
+            }
+            .frame(height: 112)
+            .padding(.top, 6)
 
             ElevationLegend()
                 .padding(.top, 4)
@@ -136,9 +268,9 @@ struct RidgeNavigationView: View {
                 .padding(.vertical, 10)
 
             HStack(spacing: 0) {
-                RouteMetric(title: "剩余爬升", value: "+\(Int(route.remainingAscent(at: progress))) m")
+                RouteMetric(title: "剩余爬升", value: hasElevationData ? "+\(Int(route.remainingAscent(at: progress))) m" : "--")
                 RouteMetric(title: "距终点", value: String(format: "%.1f km", route.remainingDistance(at: progress) / 1_000))
-                RouteMetric(title: "当前坡度", value: String(format: "%.1f%%", route.slope(at: progress)))
+                RouteMetric(title: "当前坡度", value: hasElevationData ? String(format: "%.1f%%", route.slope(at: progress)) : "--")
             }
 
             HStack(spacing: 12) {
@@ -148,9 +280,9 @@ struct RidgeNavigationView: View {
                     .background(.white.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
 
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("前方 280 米靠右")
+                    Text(isPreview ? "输入地点规划真实路线" : planner.primaryInstruction)
                         .font(.subheadline.bold())
-                    Text("方案 B 交互预览 · MapKit 地图")
+                    Text(isPreview ? "当前显示方案 B 演示路线" : "Apple MapKit · \(planner.elevationSource.title)")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.75))
                 }
@@ -176,18 +308,18 @@ struct RidgeNavigationView: View {
 }
 
 private struct CurrentAltitudeMarker: View {
-    let band: ElevationBand
+    let color: Color
 
     var body: some View {
         VStack(spacing: 0) {
             Circle()
-                .fill(band.color)
+                .fill(color)
                 .frame(width: 22, height: 22)
                 .overlay(Circle().stroke(.white, lineWidth: 5))
                 .shadow(color: .black.opacity(0.25), radius: 5, y: 2)
             Image(systemName: "triangle.fill")
                 .font(.system(size: 9))
-                .foregroundStyle(band.color)
+                .foregroundStyle(color)
                 .rotationEffect(.degrees(180))
                 .offset(y: -2)
         }

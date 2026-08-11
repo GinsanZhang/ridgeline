@@ -1,7 +1,7 @@
 import Foundation
 
 /// Reads elevation samples from one SRTM `.hgt` tile.
-struct HGTReader {
+struct HGTReader: Sendable {
     private let dimension: Int
     private let hgtFileURL: URL
     private let tileOrigin: (latitude: Int, longitude: Int)?

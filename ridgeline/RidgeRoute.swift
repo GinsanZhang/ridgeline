@@ -44,7 +44,7 @@ enum ElevationBand: String, CaseIterable, Equatable {
     }
 }
 
-struct RoutePoint: Equatable, Identifiable {
+struct RoutePoint: Codable, Equatable, Identifiable, Sendable {
     let latitude: Double
     let longitude: Double
     let elevation: Double
@@ -63,7 +63,7 @@ struct RoutePoint: Equatable, Identifiable {
     }
 }
 
-struct RidgeRoute {
+struct RidgeRoute: Codable, Sendable {
     let points: [RoutePoint]
 
     init(points: [RoutePoint]) {
