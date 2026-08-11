@@ -147,11 +147,22 @@ struct HGTElevationStore: Sendable {
             directories.append(documents)
         }
 
-        return directories.flatMap { directory in
-            (try? fileManager.contentsOfDirectory(
+        return directories.flatMap { directory -> [URL] in
+            guard let enumerator = fileManager.enumerator(
                 at: directory,
-                includingPropertiesForKeys: nil
-            ))?.filter { $0.pathExtension.lowercased() == "hgt" } ?? []
+                includingPropertiesForKeys: [.isRegularFileKey],
+                options: [.skipsHiddenFiles]
+            ) else { return [] }
+
+            var files: [URL] = []
+            while let url = enumerator.nextObject() as? URL {
+                let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+                if url.pathExtension.lowercased() == "hgt",
+                   values?.isRegularFile == true {
+                    files.append(url)
+                }
+            }
+            return files
         }
     }
 

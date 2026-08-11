@@ -106,6 +106,28 @@ final class RoutePresentationTests: XCTestCase {
         ))
     }
 
+    func testBundledElevationTileIsDiscoverableAndReadable() throws {
+        let bundleRoot = try XCTUnwrap(Bundle.main.resourceURL)
+        let tile = try XCTUnwrap(
+            HGTElevationStore.discoverFiles().first {
+                $0.lastPathComponent == "N31E102.hgt"
+                    && $0.standardizedFileURL.path.hasPrefix(
+                        bundleRoot.standardizedFileURL.path + "/"
+                    )
+            }
+        )
+        let byteCount = try FileManager.default.attributesOfItem(
+            atPath: tile.path
+        )[.size] as? Int
+
+        XCTAssertEqual(byteCount, HGTFileValidator.expectedByteCount)
+        let reader = HGTReader(hgtFileURL: tile)
+        XCTAssertEqual(reader.elevation(lat: 31.10, lon: 102.90), 5_257)
+        XCTAssertEqual(reader.elevation(lat: 31.05, lon: 102.85), 4_687)
+        XCTAssertEqual(reader.elevation(lat: 31.20, lon: 102.80), 4_342)
+        XCTAssertEqual(reader.elevation(lat: 31.15, lon: 102.95), 4_503)
+    }
+
     func testDuplicateTileNamesUseLastFileWithoutCrashing() {
         let bundled = URL(fileURLWithPath: "/Bundle/N31E102.hgt")
         let imported = URL(fileURLWithPath: "/Documents/N31E102.hgt")
