@@ -123,6 +123,7 @@ enum HGTFileValidator {
 
 struct HGTElevationStore: Sendable {
     private let readersByTileName: [String: HGTReader]
+    let bundledTileNames: Set<String>
 
     init(fileURLs: [URL] = Self.discoverFiles()) {
         readersByTileName = fileURLs.reduce(into: [:]) { result, url in
@@ -131,6 +132,12 @@ struct HGTElevationStore: Sendable {
             // the bundled version with the same SRTM tile name.
             result[key] = HGTReader(hgtFileURL: url)
         }
+        let bundleRoot = Bundle.main.resourceURL?.standardizedFileURL.path
+        bundledTileNames = Set(fileURLs.compactMap { url in
+            guard let bundleRoot,
+                  url.standardizedFileURL.path.hasPrefix(bundleRoot + "/") else { return nil }
+            return url.deletingPathExtension().lastPathComponent.uppercased()
+        })
     }
 
     func elevation(at coordinate: CLLocationCoordinate2D) -> Int16? {
@@ -140,12 +147,14 @@ struct HGTElevationStore: Sendable {
         )
     }
 
+    var availableTileNames: Set<String> {
+        Set(readersByTileName.keys)
+    }
+
     static func discoverFiles() -> [URL] {
         let fileManager = FileManager.default
         var directories = [Bundle.main.resourceURL].compactMap { $0 }
-        if let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first {
-            directories.append(documents)
-        }
+        directories.append(ElevationTileCache.defaultDirectory)
 
         return directories.flatMap { directory -> [URL] in
             guard let enumerator = fileManager.enumerator(
@@ -166,7 +175,7 @@ struct HGTElevationStore: Sendable {
         }
     }
 
-    private static func tileName(for coordinate: CLLocationCoordinate2D) -> String {
+    static func tileName(for coordinate: CLLocationCoordinate2D) -> String {
         let latitude = Int(floor(coordinate.latitude))
         let longitude = Int(floor(coordinate.longitude))
         return String(

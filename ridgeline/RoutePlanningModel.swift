@@ -50,17 +50,26 @@ final class RoutePlanningModel: ObservableObject {
     @Published private(set) var primaryInstruction = "输入起点和终点后开始规划"
     @Published private(set) var isLoading = false
     @Published private(set) var errorMessage: String?
-    @Published private(set) var importedTileMessage: String?
+    @Published private(set) var elevationDownloadMessage: String?
+    @Published private(set) var routeCoordinates: [CLLocationCoordinate2D] = []
+    @Published private(set) var routeMapLines: [RouteMapLine] = []
 
     private var elevationStore: HGTElevationStore
     private let profileBuilder: ElevationProfileBuilder
+    private let elevationTileCache: ElevationTileCache
+    private var elevationTask: Task<Void, Never>?
+    private var routeGeneration = UUID()
+    private let routeCacheWriter = RouteCacheWriter()
+    private var persistenceVersion = 0
 
     init(
         elevationStore: HGTElevationStore = HGTElevationStore(),
-        profileBuilder: ElevationProfileBuilder = ElevationProfileBuilder()
+        profileBuilder: ElevationProfileBuilder = ElevationProfileBuilder(),
+        elevationTileCache: ElevationTileCache = ElevationTileCache()
     ) {
         self.elevationStore = elevationStore
         self.profileBuilder = profileBuilder
+        self.elevationTileCache = elevationTileCache
     }
 
     @discardableResult
@@ -75,7 +84,7 @@ final class RoutePlanningModel: ObservableObject {
 
         isLoading = true
         errorMessage = nil
-        importedTileMessage = nil
+        elevationDownloadMessage = nil
         clearRoute()
         defer { isLoading = false }
 
@@ -96,33 +105,35 @@ final class RoutePlanningModel: ObservableObject {
             }
 
             let coordinates = mapRoute.polyline.coordinates
-            let builder = profileBuilder
-            let store = elevationStore
-            let profile = await Task.detached(priority: .userInitiated) {
-                builder.build(coordinates: coordinates) { coordinate in
-                    store.elevation(at: coordinate)
-                }
-            }.value
-            guard let builtRoute = profile.route else {
+            guard !coordinates.isEmpty else {
                 throw PlanningError.noRoute
             }
+            let initialRoute = RidgeRoute(points: coordinates.map {
+                RoutePoint(latitude: $0.latitude, longitude: $0.longitude, elevation: 0)
+            })
 
             let name = "\(start.name ?? origin) → \(end.name ?? destination)"
             let instruction = mapRoute.steps
                 .first(where: { !$0.instructions.isEmpty })?.instructions
                 ?? "沿路线前进"
-            apply(
-                SavedRoute(
-                    route: builtRoute,
-                    name: name,
-                    source: profile.source,
-                    instruction: instruction,
-                    originQuery: origin,
-                    destinationQuery: destination,
-                    travelMode: selectedTravelMode
-                )
+            let generation = UUID()
+            routeGeneration = generation
+            let initialSavedRoute = SavedRoute(
+                route: initialRoute,
+                name: name,
+                source: .unavailable,
+                instruction: instruction,
+                originQuery: origin,
+                destinationQuery: destination,
+                travelMode: selectedTravelMode
             )
-            try? saveCurrentRoute()
+            apply(initialSavedRoute)
+            startElevationLoading(
+                coordinates: coordinates,
+                routeMetadata: initialSavedRoute,
+                generation: generation
+            )
+            saveCurrentRoute()
             return true
         } catch {
             if shouldUseSavedRoute(for: error),
@@ -141,40 +152,54 @@ final class RoutePlanningModel: ObservableObject {
         }
     }
 
-    func importHGT(from sourceURL: URL) async {
-        importedTileMessage = nil
-        errorMessage = nil
-        let didAccess = sourceURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess { sourceURL.stopAccessingSecurityScopedResource() }
+    private func startElevationLoading(
+        coordinates: [CLLocationCoordinate2D],
+        routeMetadata: SavedRoute,
+        generation: UUID
+    ) {
+        elevationTask?.cancel()
+        let tileNames = RouteElevationTilePlanner.tileNames(for: coordinates)
+        let missing = tileNames.filter { !elevationStore.availableTileNames.contains($0) }
+        if !missing.isEmpty {
+            elevationDownloadMessage = "正在临时缓存沿线高程（\(missing.count) 块）"
         }
 
-        do {
-            let destination = try await Task.detached(priority: .userInitiated) {
-                let fileManager = FileManager.default
-                guard let documents = fileManager.urls(
-                    for: .documentDirectory,
-                    in: .userDomainMask
-                ).first else {
-                    throw PlanningError.documentsUnavailable
-                }
-                let data = try Data(contentsOf: sourceURL)
-                guard HGTFileValidator.isValid(
-                    fileName: sourceURL.lastPathComponent,
-                    byteCount: data.count
-                ) else {
-                    throw PlanningError.invalidHGT
-                }
-                let destination = documents.appendingPathComponent(sourceURL.lastPathComponent)
-                try data.write(to: destination, options: .atomic)
-                return destination
-            }.value
-            elevationStore = HGTElevationStore()
-            importedTileMessage = "已导入 \(destination.lastPathComponent)，请重新规划路线"
-        } catch PlanningError.invalidHGT {
-            errorMessage = "HGT 文件无效：需要 N31E102.hgt 格式的 SRTM1 文件"
-        } catch {
-            errorMessage = "HGT 导入失败：\(error.localizedDescription)"
+        elevationTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await elevationTileCache.prepareTiles(
+                    named: tileNames,
+                    excluding: elevationStore.bundledTileNames
+                )
+                guard !Task.isCancelled, routeGeneration == generation else { return }
+                let refreshedStore = HGTElevationStore()
+                elevationStore = refreshedStore
+                let builder = profileBuilder
+                let profile = await Task.detached(priority: .userInitiated) {
+                    builder.build(coordinates: coordinates) { coordinate in
+                        refreshedStore.elevation(at: coordinate)
+                    }
+                }.value
+                guard !Task.isCancelled,
+                      routeGeneration == generation,
+                      let completedRoute = profile.route else { return }
+                apply(SavedRoute(
+                    route: completedRoute,
+                    name: routeMetadata.name,
+                    source: profile.source,
+                    instruction: routeMetadata.instruction,
+                    originQuery: routeMetadata.originQuery,
+                    destinationQuery: routeMetadata.destinationQuery,
+                    travelMode: routeMetadata.travelMode
+                ))
+                elevationDownloadMessage = profile.hasCompleteElevation
+                    ? "沿线高程已就绪（临时缓存）"
+                    : "部分沿线高程暂不可用"
+                saveCurrentRoute()
+            } catch {
+                guard routeGeneration == generation else { return }
+                elevationDownloadMessage = "沿线高程下载失败，地图路线仍可使用"
+            }
         }
     }
 
@@ -193,20 +218,30 @@ final class RoutePlanningModel: ObservableObject {
     }
 
     private func clearRoute() {
+        elevationTask?.cancel()
+        routeGeneration = UUID()
         route = nil
+        routeCoordinates = []
+        routeMapLines = []
         routeName = "规划真实路线"
         elevationSource = .unavailable
         primaryInstruction = "输入起点和终点后开始规划"
+        elevationDownloadMessage = nil
     }
 
     private func apply(_ saved: SavedRoute) {
         route = saved.route
+        routeCoordinates = saved.route.points.map(\.coordinate)
+        routeMapLines = RouteMapLineBuilder.lines(
+            for: saved.route.points,
+            usesElevationBands: saved.source == .offlineDEM
+        )
         routeName = saved.name
         elevationSource = saved.source
         primaryInstruction = saved.instruction
     }
 
-    private func saveCurrentRoute() throws {
+    private func saveCurrentRoute() {
         guard let route else { return }
         let saved = SavedRoute(
             route: route,
@@ -217,13 +252,12 @@ final class RoutePlanningModel: ObservableObject {
             destinationQuery: destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines),
             travelMode: selectedTravelMode
         )
-        let data = try JSONEncoder().encode(saved)
-        let fileManager = FileManager.default
-        try fileManager.createDirectory(
-            at: Self.savedRouteURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try data.write(to: Self.savedRouteURL, options: .atomic)
+        persistenceVersion += 1
+        let version = persistenceVersion
+        let writer = routeCacheWriter
+        Task {
+            await writer.save(saved, to: Self.savedRouteURL, version: version)
+        }
     }
 
     private func loadSavedRoute() throws -> SavedRoute {
@@ -231,7 +265,7 @@ final class RoutePlanningModel: ObservableObject {
         return try JSONDecoder().decode(SavedRoute.self, from: data)
     }
 
-    private static var savedRouteURL: URL {
+    nonisolated private static var savedRouteURL: URL {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("last-route.json")
     }
@@ -326,8 +360,26 @@ final class RoutePlanningModel: ObservableObject {
     private enum PlanningError: Error {
         case placeNotFound(String)
         case noRoute
-        case documentsUnavailable
-        case invalidHGT
+    }
+}
+
+private actor RouteCacheWriter {
+    private var latestVersion = 0
+
+    func save(
+        _ route: RoutePlanningModel.SavedRoute,
+        to url: URL,
+        version: Int
+    ) {
+        guard version >= latestVersion else { return }
+        latestVersion = version
+        guard let data = try? JSONEncoder().encode(route) else { return }
+        let fileManager = FileManager.default
+        try? fileManager.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? data.write(to: url, options: .atomic)
     }
 }
 

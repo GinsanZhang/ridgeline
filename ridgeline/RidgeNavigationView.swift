@@ -1,11 +1,9 @@
 import MapKit
 import SwiftUI
-import UniformTypeIdentifiers
 
 struct RidgeNavigationView: View {
     @StateObject private var planner = RoutePlanningModel()
     @State private var progress = 0.37
-    @State private var isImportingHGT = false
     @State private var cameraPosition: MapCameraPosition = .region(
         MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 31.137, longitude: 102.916),
@@ -49,31 +47,16 @@ struct RidgeNavigationView: View {
             routeSheet
         }
         .background(Color(red: 0.86, green: 0.89, blue: 0.83))
-        .fileImporter(
-            isPresented: $isImportingHGT,
-            allowedContentTypes: [.data],
-            allowsMultipleSelection: false
-        ) { result in
-            guard case .success(let urls) = result, let url = urls.first else { return }
-            Task { await planner.importHGT(from: url) }
-        }
     }
 
     private var routeMap: some View {
         Map(position: $cameraPosition, interactionModes: .all) {
-            ForEach(Array(route.points.indices.dropLast()), id: \.self) { index in
-                let start = route.points[index]
-                let end = route.points[index + 1]
-                let band = ElevationBand.band(for: (start.elevation + end.elevation) / 2)
-                let routeColor = isPreview || planner.elevationSource == .offlineDEM
-                    ? band.color
-                    : Color.blue
+            MapPolyline(coordinates: mapCoordinates)
+                .stroke(.white.opacity(0.88), lineWidth: 10)
 
-                MapPolyline(coordinates: [start.coordinate, end.coordinate])
-                    .stroke(.white.opacity(0.88), lineWidth: 10)
-
-                MapPolyline(coordinates: [start.coordinate, end.coordinate])
-                    .stroke(routeColor, lineWidth: 6)
+            ForEach(mapStrokes) { stroke in
+                MapPolyline(coordinates: stroke.coordinates)
+                    .stroke(stroke.elevationBand?.color ?? .blue, lineWidth: 6)
             }
 
             Annotation("当前位置", coordinate: currentPoint.coordinate, anchor: .bottom) {
@@ -139,18 +122,10 @@ struct RidgeNavigationView: View {
             .tint(Color(red: 0.12, green: 0.32, blue: 0.25))
             .disabled(planner.isLoading)
 
-            Button {
-                isImportingHGT = true
-            } label: {
-                Label("导入离线 HGT 高程", systemImage: "square.and.arrow.down")
-                    .font(.caption.bold())
-            }
-            .buttonStyle(.plain)
-
-            if let message = planner.importedTileMessage {
+            if let message = planner.elevationDownloadMessage {
                 Text(message)
                     .font(.caption2)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
@@ -164,6 +139,16 @@ struct RidgeNavigationView: View {
         .textFieldStyle(.roundedBorder)
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var mapStrokes: [RouteMapLine] {
+        isPreview
+            ? RouteMapLineBuilder.lines(for: route.points, usesElevationBands: true)
+            : planner.routeMapLines
+    }
+
+    private var mapCoordinates: [CLLocationCoordinate2D] {
+        isPreview ? route.points.map(\.coordinate) : planner.routeCoordinates
     }
 
     private func startPlanning() {
@@ -261,9 +246,9 @@ struct RidgeNavigationView: View {
                     ElevationProfileView(route: route, progress: $progress)
                 } else {
                     ContentUnavailableView(
-                        "缺少离线高程",
+                        "沿线高程准备中",
                         systemImage: "mountain.2",
-                        description: Text("将路线区域的 .hgt 文件放入 App 文稿目录")
+                        description: Text("联网时会自动临时缓存路线经过区域的高程")
                     )
                 }
             }

@@ -175,6 +175,81 @@ final class RoutePresentationTests: XCTestCase {
         XCTAssertNoThrow(HGTElevationStore(fileURLs: [bundled, imported]))
     }
 
+    func testRouteTilePlannerIncludesEveryCrossedTileWithoutDuplicates() {
+        let tiles = RouteElevationTilePlanner.tileNames(for: [
+            CLLocationCoordinate2D(latitude: 30.57, longitude: 104.06),
+            CLLocationCoordinate2D(latitude: 29.99, longitude: 100.26)
+        ])
+
+        XCTAssertEqual(tiles.first, "N30E104")
+        XCTAssertTrue(tiles.contains("N30E103"))
+        XCTAssertTrue(tiles.contains("N30E102"))
+        XCTAssertTrue(tiles.contains("N30E101"))
+        XCTAssertTrue(tiles.contains("N29E100"))
+        XCTAssertEqual(tiles.count, Set(tiles).count)
+    }
+
+    func testTemporaryElevationCacheExpiresOldFilesAndEnforcesSizeLimit() {
+        let now = Date(timeIntervalSince1970: 3_000_000)
+        let policy = ElevationTileCachePolicy(
+            maximumByteCount: 500,
+            maximumAge: 30 * 24 * 60 * 60
+        )
+        let files = [
+            ElevationCacheFile(name: "expired", byteCount: 100, lastAccess: now.addingTimeInterval(-31 * 24 * 60 * 60)),
+            ElevationCacheFile(name: "old", byteCount: 300, lastAccess: now.addingTimeInterval(-2_000)),
+            ElevationCacheFile(name: "new", byteCount: 300, lastAccess: now.addingTimeInterval(-1_000))
+        ]
+
+        XCTAssertEqual(policy.filesToRemove(from: files, now: now), ["expired", "old"])
+    }
+
+    func testPreparingCachedRouteTileRefreshesItsLifetimeBeforeCleanup() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ElevationTileCacheTests-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let tile = directory.appendingPathComponent("N30E104.hgt")
+        FileManager.default.createFile(atPath: tile.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: tile)
+        try handle.truncate(atOffset: UInt64(HGTFileValidator.expectedByteCount))
+        try handle.close()
+        let expiredDate = Date().addingTimeInterval(-31 * 24 * 60 * 60)
+        try FileManager.default.setAttributes(
+            [.modificationDate: expiredDate],
+            ofItemAtPath: tile.path
+        )
+        let cache = ElevationTileCache(
+            directory: directory,
+            policy: ElevationTileCachePolicy(
+                maximumByteCount: HGTFileValidator.expectedByteCount * 2,
+                maximumAge: 30 * 24 * 60 * 60
+            )
+        )
+
+        try await cache.prepareTiles(named: ["N30E104"], excluding: [])
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tile.path))
+        let attributes = try FileManager.default.attributesOfItem(atPath: tile.path)
+        let refreshed = try XCTUnwrap(attributes[.modificationDate] as? Date)
+        XCTAssertGreaterThan(refreshed, expiredDate)
+    }
+
+    func testLongRouteWithoutElevationUsesOneMapLine() {
+        let points = (0..<7_000).map { index in
+            RoutePoint(
+                latitude: 30,
+                longitude: 100 + Double(index) * 0.0001,
+                elevation: 0
+            )
+        }
+
+        XCTAssertEqual(
+            RouteMapLineBuilder.lines(for: points, usesElevationBands: false).count,
+            1
+        )
+    }
+
     func testRemainingAscentSumsOnlyUphillSections() {
         let route = RidgeRoute(points: [
             RoutePoint(latitude: 0, longitude: 0, elevation: 2_000),

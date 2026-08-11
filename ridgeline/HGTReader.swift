@@ -5,11 +5,13 @@ struct HGTReader: Sendable {
     private let dimension: Int
     private let hgtFileURL: URL
     private let tileOrigin: (latitude: Int, longitude: Int)?
+    private let mappedData: Data?
 
     init(dimension: Int = 3601, hgtFileURL: URL) {
         self.dimension = dimension
         self.hgtFileURL = hgtFileURL
         self.tileOrigin = Self.parseTileOrigin(from: hgtFileURL.deletingPathExtension().lastPathComponent)
+        self.mappedData = try? Data(contentsOf: hgtFileURL, options: .mappedIfSafe)
     }
 
     func elevation(lat: Double, lon: Double) -> Int16? {
@@ -31,24 +33,13 @@ struct HGTReader: Sendable {
         let column = Int(longitudeFraction * Double(dimension - 1))
         let byteOffset = (row * dimension + column) * MemoryLayout<Int16>.size
 
-        guard let fileHandle = try? FileHandle(forReadingFrom: hgtFileURL) else {
+        guard let mappedData, byteOffset + 1 < mappedData.count else {
             return nil
         }
-        defer { try? fileHandle.close() }
-
-        do {
-            try fileHandle.seek(toOffset: UInt64(byteOffset))
-            guard let data = try fileHandle.read(upToCount: 2), data.count == 2 else {
-                return nil
-            }
-
-            let unsignedValue = (UInt16(data[data.startIndex]) << 8)
-                | UInt16(data[data.index(after: data.startIndex)])
-            let value = Int16(bitPattern: unsignedValue)
-            return value == Int16.min ? nil : value
-        } catch {
-            return nil
-        }
+        let unsignedValue = (UInt16(mappedData[byteOffset]) << 8)
+            | UInt16(mappedData[byteOffset + 1])
+        let value = Int16(bitPattern: unsignedValue)
+        return value == Int16.min ? nil : value
     }
 
     private static func parseTileOrigin(from fileName: String) -> (latitude: Int, longitude: Int)? {

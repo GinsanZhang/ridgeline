@@ -63,16 +63,85 @@ struct RoutePoint: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+struct RouteMapLine: Identifiable {
+    let id: Int
+    let coordinates: [CLLocationCoordinate2D]
+    let elevationBand: ElevationBand?
+}
+
+enum RouteMapLineBuilder {
+    static func lines(
+        for points: [RoutePoint],
+        usesElevationBands: Bool
+    ) -> [RouteMapLine] {
+        guard !points.isEmpty else { return [] }
+        guard usesElevationBands, points.count > 1 else {
+            return [RouteMapLine(
+                id: 0,
+                coordinates: points.map(\.coordinate),
+                elevationBand: nil
+            )]
+        }
+
+        var lines: [RouteMapLine] = []
+        var coordinates = [points[0].coordinate]
+        var currentBand = ElevationBand.band(for: points[0].elevation)
+        for point in points.dropFirst() {
+            let band = ElevationBand.band(for: point.elevation)
+            coordinates.append(point.coordinate)
+            if band != currentBand {
+                lines.append(RouteMapLine(
+                    id: lines.count,
+                    coordinates: coordinates,
+                    elevationBand: currentBand
+                ))
+                coordinates = [point.coordinate]
+                currentBand = band
+            }
+        }
+        if coordinates.count == 1, let last = lines.last?.coordinates.last {
+            coordinates.insert(last, at: 0)
+        }
+        lines.append(RouteMapLine(
+            id: lines.count,
+            coordinates: coordinates,
+            elevationBand: currentBand
+        ))
+        return lines
+    }
+}
+
 struct RidgeRoute: Codable, Sendable {
     let points: [RoutePoint]
+    private let segmentDistances: [CLLocationDistance]
+    private let cumulativeDistances: [CLLocationDistance]
+    private let ascentFromPoint: [Double]
 
     init(points: [RoutePoint]) {
         precondition(!points.isEmpty, "A ridge route requires at least one point.")
         self.points = points
+        segmentDistances = points.indices.dropLast().map {
+            points[$0].distance(to: points[$0 + 1])
+        }
+        var cumulative: [CLLocationDistance] = [0]
+        cumulative.reserveCapacity(points.count)
+        for distance in segmentDistances {
+            cumulative.append(cumulative.last! + distance)
+        }
+        cumulativeDistances = cumulative
+
+        var ascents = Array(repeating: 0.0, count: points.count)
+        if points.count > 1 {
+            for index in stride(from: points.count - 2, through: 0, by: -1) {
+                ascents[index] = ascents[index + 1]
+                    + max(0, points[index + 1].elevation - points[index].elevation)
+            }
+        }
+        ascentFromPoint = ascents
     }
 
     var totalDistance: CLLocationDistance {
-        segmentDistances.reduce(0, +)
+        cumulativeDistances.last ?? 0
     }
 
     func sample(at progress: Double) -> RoutePoint {
@@ -100,11 +169,7 @@ struct RidgeRoute: Codable, Sendable {
         let current = sample(at: progress)
         var ascent = max(0, points[position.segmentIndex + 1].elevation - current.elevation)
 
-        if position.segmentIndex + 1 < points.count - 1 {
-            for index in (position.segmentIndex + 1)..<(points.count - 1) {
-                ascent += max(0, points[index + 1].elevation - points[index].elevation)
-            }
-        }
+        ascent += ascentFromPoint[position.segmentIndex + 1]
         return ascent
     }
 
@@ -118,27 +183,41 @@ struct RidgeRoute: Codable, Sendable {
         return elevationGain / distance * 100
     }
 
-    private var segmentDistances: [CLLocationDistance] {
-        points.indices.dropLast().map { points[$0].distance(to: points[$0 + 1]) }
-    }
-
     private func interpolationPosition(at progress: Double) -> (segmentIndex: Int, fraction: Double) {
-        let distances = segmentDistances
         let targetDistance = totalDistance * clamped(progress)
-        var traversed: CLLocationDistance = 0
-
-        for (index, distance) in distances.enumerated() {
-            if targetDistance <= traversed + distance || index == distances.count - 1 {
-                let fraction = distance > 0 ? (targetDistance - traversed) / distance : 0
-                return (index, min(max(fraction, 0), 1))
+        var lower = 0
+        var upper = max(0, cumulativeDistances.count - 2)
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if cumulativeDistances[middle + 1] < targetDistance {
+                lower = middle + 1
+            } else {
+                upper = middle
             }
-            traversed += distance
         }
-        return (max(0, points.count - 2), 1)
+        let distance = segmentDistances[lower]
+        let fraction = distance > 0
+            ? (targetDistance - cumulativeDistances[lower]) / distance
+            : 0
+        return (lower, min(max(fraction, 0), 1))
     }
 
     private func clamped(_ progress: Double) -> Double {
         min(max(progress, 0), 1)
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case points
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(points: try container.decode([RoutePoint].self, forKey: .points))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(points, forKey: .points)
     }
 
     static let previewSiguniangshan = RidgeRoute(points: [

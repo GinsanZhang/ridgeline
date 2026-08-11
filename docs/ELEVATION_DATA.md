@@ -1,6 +1,7 @@
 # Elevation data notice
 
-RidgeLine bundles the following elevation tile for offline personal use:
+RidgeLine bundles the following elevation tile and temporarily caches additional
+route-area tiles from the same source:
 
 | Tile | Coverage | Format | Uncompressed bytes | SHA-256 |
 |---|---|---|---:|---|
@@ -17,6 +18,13 @@ RidgeLine bundles the following elevation tile for offline personal use:
 - Data-use guidance: [NASA Earthdata Data Use and Citation Guidance](https://www.earthdata.nasa.gov/engage/open-data-services-software/data-use-policy).
 
 Acknowledgement does not imply endorsement by NASA, USGS, AWS, or Mapzen.
+
+## Temporary route cache
+
+- Missing tiles along a planned route are downloaded automatically; route display does not wait for elevation.
+- Files are stored in the system Caches directory, not Documents, and may also be evicted by iOS.
+- The app removes files older than 30 days and applies a 500 MiB LRU-style size limit.
+- Clearing or reinstalling the app removes the downloaded elevation cache. The bundled `N31E102` tile remains available.
 
 ## Reproducible verification
 
