@@ -20,7 +20,7 @@ struct RidgeNavigationView: View {
     }
 
     private var hasElevationData: Bool {
-        isPreview || planner.elevationSource == .offlineDEM
+        isPreview || planner.elevationSource.hasUsableElevation
     }
 
     private var currentPoint: RoutePoint {
@@ -234,7 +234,7 @@ struct RidgeNavigationView: View {
                 VStack(alignment: .trailing, spacing: 4) {
                     Text(hasElevationData ? "\(Int(currentPoint.elevation))" : "--")
                         .font(.system(size: 28, weight: .black, design: .monospaced))
-                    Label(hasElevationData ? "\(currentBand.title) · 米" : "请导入对应 HGT", systemImage: "circle.fill")
+                    Label(hasElevationData ? "\(currentBand.title) · 米" : "等待沿线高程", systemImage: "circle.fill")
                         .font(.caption2.weight(.medium))
                         .foregroundStyle(currentBand.color)
                 }

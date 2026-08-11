@@ -1,5 +1,6 @@
 import CoreLocation
 import Foundation
+import ImageIO
 import zlib
 
 struct ElevationCacheFile: Equatable, Sendable {
@@ -107,6 +108,39 @@ actor ElevationTileCache {
         }
     }
 
+    func prepareOverviewTiles(_ tileIDs: [TerrariumTileID]) async throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for tile in tileIDs {
+            let destination = directory.appendingPathComponent(tile.fileName)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                if isValidImage(destination) {
+                    try touch(destination)
+                } else {
+                    try FileManager.default.removeItem(at: destination)
+                }
+            }
+        }
+        try cleanup()
+        for tile in tileIDs {
+            let destination = directory.appendingPathComponent(tile.fileName)
+            guard !FileManager.default.fileExists(atPath: destination.path) else { continue }
+            do {
+                let url = URL(string:
+                    "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/\(tile.zoom)/\(tile.x)/\(tile.y).png"
+                )!
+                let (data, response) = try await session.data(from: url)
+                guard let http = response as? HTTPURLResponse,
+                      http.statusCode == 200,
+                      CGImageSourceCreateWithData(data as CFData, nil) != nil else { continue }
+                try data.write(to: destination, options: .atomic)
+                try touch(destination)
+                try cleanup()
+            } catch {
+                continue
+            }
+        }
+    }
+
     static var defaultDirectory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent(directoryName, isDirectory: true)
@@ -138,7 +172,7 @@ actor ElevationTileCache {
             at: directory,
             includingPropertiesForKeys: Array(keys),
             options: [.skipsHiddenFiles]
-        ).filter { $0.pathExtension.lowercased() == "hgt" }
+        ).filter { ["hgt", "png"].contains($0.pathExtension.lowercased()) }
         let files = urls.compactMap { url -> ElevationCacheFile? in
             guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
             return ElevationCacheFile(
@@ -167,6 +201,11 @@ actor ElevationTileCache {
             fileName: url.lastPathComponent,
             byteCount: byteCount
         )
+    }
+
+    private func isValidImage(_ url: URL) -> Bool {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return false }
+        return CGImageSourceGetCount(source) > 0
     }
 }
 

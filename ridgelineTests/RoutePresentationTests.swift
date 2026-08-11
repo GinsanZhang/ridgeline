@@ -4,6 +4,39 @@ import XCTest
 @testable import ridgeline
 
 final class RoutePresentationTests: XCTestCase {
+    func testTerrariumPixelDecodesElevationInMeters() {
+        XCTAssertEqual(
+            TerrariumElevation.decode(red: 128, green: 1, blue: 0),
+            1,
+            accuracy: 0.001
+        )
+        XCTAssertEqual(
+            TerrariumElevation.decode(red: 127, green: 255, blue: 128),
+            -0.5,
+            accuracy: 0.001
+        )
+    }
+
+    func testOverviewTileUsesWebMercatorCoordinates() {
+        XCTAssertEqual(
+            TerrariumTileID(coordinate: CLLocationCoordinate2D(latitude: 0, longitude: 0), zoom: 9),
+            TerrariumTileID(zoom: 9, x: 256, y: 256)
+        )
+    }
+
+    func testOverviewElevationIsUsableButNotFineResolution() {
+        XCTAssertTrue(ElevationDataSource.overviewDEM.hasUsableElevation)
+        XCTAssertFalse(ElevationDataSource.overviewDEM.isFineResolution)
+        XCTAssertTrue(ElevationDataSource.offlineDEM.isFineResolution)
+    }
+
+    func testOnlyCompleteFineElevationReplacesOverview() {
+        XCTAssertTrue(ElevationUpgradePolicy.shouldReplaceOverview(with: .offlineDEM))
+        XCTAssertFalse(ElevationUpgradePolicy.shouldReplaceOverview(with: .partialDEM))
+        XCTAssertFalse(ElevationUpgradePolicy.shouldReplaceOverview(with: .unavailable))
+        XCTAssertFalse(ElevationUpgradePolicy.shouldReplaceOverview(with: .overviewDEM))
+    }
+
     func testTravelModesDefaultToDrivingAndMapToMapKit() {
         XCTAssertEqual(RouteTravelMode.defaultMode, .automobile)
         XCTAssertEqual(RouteTravelMode.automobile.transportType, .automobile)

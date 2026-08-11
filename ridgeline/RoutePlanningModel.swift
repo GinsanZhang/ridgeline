@@ -159,13 +159,44 @@ final class RoutePlanningModel: ObservableObject {
     ) {
         elevationTask?.cancel()
         let tileNames = RouteElevationTilePlanner.tileNames(for: coordinates)
+        let overviewTiles = RouteOverviewTilePlanner.tileIDs(for: coordinates)
         let missing = tileNames.filter { !elevationStore.availableTileNames.contains($0) }
-        if !missing.isEmpty {
-            elevationDownloadMessage = "正在临时缓存沿线高程（\(missing.count) 块）"
-        }
+        elevationDownloadMessage = "正在加载概览高程"
 
         elevationTask = Task { [weak self] in
             guard let self else { return }
+            do {
+                try await elevationTileCache.prepareOverviewTiles(overviewTiles)
+                guard !Task.isCancelled, routeGeneration == generation else { return }
+                let overviewBuilder = ElevationProfileBuilder(sampleSpacing: 300)
+                let overview = await Task.detached(priority: .userInitiated) {
+                    let overviewStore = TerrariumElevationStore(tileIDs: overviewTiles)
+                    return overviewBuilder.build(coordinates: coordinates) { coordinate in
+                        overviewStore.elevation(at: coordinate)
+                    }
+                }.value
+                if overview.source == .offlineDEM,
+                   let overviewRoute = overview.route,
+                   routeGeneration == generation {
+                    apply(SavedRoute(
+                        route: overviewRoute,
+                        name: routeMetadata.name,
+                        source: .overviewDEM,
+                        instruction: routeMetadata.instruction,
+                        originQuery: routeMetadata.originQuery,
+                        destinationQuery: routeMetadata.destinationQuery,
+                        travelMode: routeMetadata.travelMode
+                    ))
+                    elevationDownloadMessage = missing.isEmpty
+                        ? "概览高程已就绪，正在校验精细高程"
+                        : "概览高程已就绪，正在升级30米精细高程（\(missing.count)块）"
+                    saveCurrentRoute()
+                }
+            } catch {
+                guard routeGeneration == generation else { return }
+                elevationDownloadMessage = "概览高程暂不可用，继续加载精细高程"
+            }
+
             do {
                 try await elevationTileCache.prepareTiles(
                     named: tileNames,
@@ -180,22 +211,25 @@ final class RoutePlanningModel: ObservableObject {
                         refreshedStore.elevation(at: coordinate)
                     }
                 }.value
-                guard !Task.isCancelled,
-                      routeGeneration == generation,
-                      let completedRoute = profile.route else { return }
-                apply(SavedRoute(
-                    route: completedRoute,
-                    name: routeMetadata.name,
-                    source: profile.source,
-                    instruction: routeMetadata.instruction,
-                    originQuery: routeMetadata.originQuery,
-                    destinationQuery: routeMetadata.destinationQuery,
-                    travelMode: routeMetadata.travelMode
-                ))
-                elevationDownloadMessage = profile.hasCompleteElevation
-                    ? "沿线高程已就绪（临时缓存）"
-                    : "部分沿线高程暂不可用"
-                saveCurrentRoute()
+                guard !Task.isCancelled, routeGeneration == generation else { return }
+                if ElevationUpgradePolicy.shouldReplaceOverview(with: profile.source),
+                   let completedRoute = profile.route {
+                    apply(SavedRoute(
+                        route: completedRoute,
+                        name: routeMetadata.name,
+                        source: profile.source,
+                        instruction: routeMetadata.instruction,
+                        originQuery: routeMetadata.originQuery,
+                        destinationQuery: routeMetadata.destinationQuery,
+                        travelMode: routeMetadata.travelMode
+                    ))
+                    elevationDownloadMessage = "30米精细高程已就绪（临时缓存）"
+                    saveCurrentRoute()
+                } else {
+                    elevationDownloadMessage = elevationSource == .overviewDEM
+                        ? "30米数据覆盖不完整，继续使用概览高程"
+                        : "部分沿线高程暂不可用"
+                }
             } catch {
                 guard routeGeneration == generation else { return }
                 elevationDownloadMessage = "沿线高程下载失败，地图路线仍可使用"
@@ -234,7 +268,7 @@ final class RoutePlanningModel: ObservableObject {
         routeCoordinates = saved.route.points.map(\.coordinate)
         routeMapLines = RouteMapLineBuilder.lines(
             for: saved.route.points,
-            usesElevationBands: saved.source == .offlineDEM
+            usesElevationBands: saved.source.hasUsableElevation
         )
         routeName = saved.name
         elevationSource = saved.source

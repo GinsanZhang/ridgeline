@@ -3,15 +3,29 @@ import Foundation
 
 enum ElevationDataSource: Codable, Equatable, Sendable {
     case offlineDEM
+    case overviewDEM
     case partialDEM
     case unavailable
 
     var title: String {
         switch self {
         case .offlineDEM: "本地 HGT 高程"
+        case .overviewDEM: "概览高程 · 约 300m"
         case .partialDEM: "HGT 覆盖不完整"
         case .unavailable: "高程数据不可用"
         }
+    }
+
+    var hasUsableElevation: Bool {
+        self == .offlineDEM || self == .overviewDEM
+    }
+
+    var isFineResolution: Bool { self == .offlineDEM }
+}
+
+enum ElevationUpgradePolicy {
+    static func shouldReplaceOverview(with source: ElevationDataSource) -> Bool {
+        source == .offlineDEM
     }
 }
 
@@ -24,7 +38,7 @@ struct ElevationProfileResult: Sendable {
     }
 
     var hasCompleteElevation: Bool {
-        source == .offlineDEM
+        source.hasUsableElevation
     }
 }
 
