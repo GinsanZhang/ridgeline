@@ -4,6 +4,103 @@ import XCTest
 @testable import ridgeline
 
 final class RoutePresentationTests: XCTestCase {
+    func testMapZoomChoosesElevationResolutionWithHysteresis() {
+        XCTAssertEqual(
+            MapElevationResolutionPolicy.preferredResolution(
+                latitudeDelta: 1.4,
+                current: .overview
+            ),
+            .fine
+        )
+        XCTAssertEqual(
+            MapElevationResolutionPolicy.preferredResolution(
+                latitudeDelta: 1.8,
+                current: .fine
+            ),
+            .fine
+        )
+        XCTAssertEqual(
+            MapElevationResolutionPolicy.preferredResolution(
+                latitudeDelta: 2.1,
+                current: .fine
+            ),
+            .overview
+        )
+    }
+
+    func testFineZoomFallsBackToOverviewUntilFineDataIsReady() {
+        XCTAssertEqual(
+            MapElevationResolutionPolicy.bestAvailableSource(
+                preferred: .fine,
+                hasOverview: true,
+                hasFine: false
+            ),
+            .overviewDEM
+        )
+        XCTAssertEqual(
+            MapElevationResolutionPolicy.bestAvailableSource(
+                preferred: .fine,
+                hasOverview: true,
+                hasFine: true
+            ),
+            .offlineDEM
+        )
+    }
+
+    func testSavedArchivePreservesBothZoomPresentations() throws {
+        let base = RoutePlanningModel.SavedRoute(
+            route: RidgeRoute(points: [
+                RoutePoint(latitude: 30, longitude: 104, elevation: 0)
+            ]),
+            name: "成都 → 理塘",
+            source: .unavailable,
+            instruction: "前进",
+            originQuery: "成都",
+            destinationQuery: "理塘",
+            travelMode: .automobile
+        )
+        let overview = RoutePlanningModel.SavedRoute(
+            route: RidgeRoute(points: [
+                RoutePoint(latitude: 30, longitude: 104, elevation: 467)
+            ]),
+            name: base.name,
+            source: .overviewDEM,
+            instruction: base.instruction,
+            originQuery: base.originQuery,
+            destinationQuery: base.destinationQuery,
+            travelMode: base.travelMode
+        )
+        let fine = RoutePlanningModel.SavedRoute(
+            route: RidgeRoute(points: [
+                RoutePoint(latitude: 30, longitude: 104, elevation: 472)
+            ]),
+            name: base.name,
+            source: .offlineDEM,
+            instruction: base.instruction,
+            originQuery: base.originQuery,
+            destinationQuery: base.destinationQuery,
+            travelMode: base.travelMode
+        )
+        let archive = RoutePlanningModel.SavedRouteArchive(
+            base: base,
+            overview: overview,
+            fine: fine
+        )
+
+        let decoded = try JSONDecoder().decode(
+            RoutePlanningModel.SavedRouteArchive.self,
+            from: JSONEncoder().encode(archive)
+        )
+
+        XCTAssertEqual(decoded.overview?.source, .overviewDEM)
+        XCTAssertEqual(decoded.fine?.source, .offlineDEM)
+        XCTAssertTrue(decoded.matches(
+            originQuery: "成都",
+            destinationQuery: "理塘",
+            travelMode: .automobile
+        ))
+    }
+
     func testTerrariumPixelDecodesElevationInMeters() {
         XCTAssertEqual(
             TerrariumElevation.decode(red: 128, green: 1, blue: 0),

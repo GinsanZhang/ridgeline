@@ -29,6 +29,41 @@ enum ElevationUpgradePolicy {
     }
 }
 
+enum MapElevationResolution: Equatable, Sendable {
+    case overview
+    case fine
+}
+
+enum MapElevationResolutionPolicy {
+    static func preferredResolution(
+        latitudeDelta: Double,
+        current: MapElevationResolution
+    ) -> MapElevationResolution {
+        switch current {
+        case .overview:
+            latitudeDelta <= 1.5 ? .fine : .overview
+        case .fine:
+            latitudeDelta >= 2.0 ? .overview : .fine
+        }
+    }
+
+    static func bestAvailableSource(
+        preferred: MapElevationResolution,
+        hasOverview: Bool,
+        hasFine: Bool
+    ) -> ElevationDataSource {
+        switch preferred {
+        case .fine:
+            if hasFine { return .offlineDEM }
+            if hasOverview { return .overviewDEM }
+        case .overview:
+            if hasOverview { return .overviewDEM }
+            if hasFine { return .offlineDEM }
+        }
+        return .unavailable
+    }
+}
+
 struct ElevationProfileResult: Sendable {
     let points: [RoutePoint]
     let source: ElevationDataSource

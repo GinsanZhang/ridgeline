@@ -61,6 +61,10 @@ final class RoutePlanningModel: ObservableObject {
     private var routeGeneration = UUID()
     private let routeCacheWriter = RouteCacheWriter()
     private var persistenceVersion = 0
+    private var preferredElevationResolution: MapElevationResolution = .overview
+    private var basePresentation: SavedRoute?
+    private var overviewPresentation: SavedRoute?
+    private var finePresentation: SavedRoute?
 
     init(
         elevationStore: HGTElevationStore = HGTElevationStore(),
@@ -127,6 +131,7 @@ final class RoutePlanningModel: ObservableObject {
                 destinationQuery: destination,
                 travelMode: selectedTravelMode
             )
+            basePresentation = initialSavedRoute
             apply(initialSavedRoute)
             startElevationLoading(
                 coordinates: coordinates,
@@ -137,13 +142,16 @@ final class RoutePlanningModel: ObservableObject {
             return true
         } catch {
             if shouldUseSavedRoute(for: error),
-               let saved = try? loadSavedRoute(),
+               let saved = try? loadSavedPresentations(),
                saved.matches(
                    originQuery: origin,
                    destinationQuery: destination,
                    travelMode: selectedTravelMode
                ) {
-                apply(saved)
+                basePresentation = saved.base
+                overviewPresentation = saved.overview
+                finePresentation = saved.fine
+                applyBestAvailableElevation()
                 errorMessage = "在线规划失败，已加载上次保存路线"
                 return true
             }
@@ -178,7 +186,7 @@ final class RoutePlanningModel: ObservableObject {
                 if overview.source == .offlineDEM,
                    let overviewRoute = overview.route,
                    routeGeneration == generation {
-                    apply(SavedRoute(
+                    let overviewSavedRoute = SavedRoute(
                         route: overviewRoute,
                         name: routeMetadata.name,
                         source: .overviewDEM,
@@ -186,11 +194,13 @@ final class RoutePlanningModel: ObservableObject {
                         originQuery: routeMetadata.originQuery,
                         destinationQuery: routeMetadata.destinationQuery,
                         travelMode: routeMetadata.travelMode
-                    ))
+                    )
+                    overviewPresentation = overviewSavedRoute
+                    applyBestAvailableElevation()
                     elevationDownloadMessage = missing.isEmpty
                         ? "概览高程已就绪，正在校验精细高程"
                         : "概览高程已就绪，正在升级30米精细高程（\(missing.count)块）"
-                    saveCurrentRoute()
+                    persistPresentations()
                 }
             } catch {
                 guard routeGeneration == generation else { return }
@@ -214,7 +224,7 @@ final class RoutePlanningModel: ObservableObject {
                 guard !Task.isCancelled, routeGeneration == generation else { return }
                 if ElevationUpgradePolicy.shouldReplaceOverview(with: profile.source),
                    let completedRoute = profile.route {
-                    apply(SavedRoute(
+                    let fineSavedRoute = SavedRoute(
                         route: completedRoute,
                         name: routeMetadata.name,
                         source: profile.source,
@@ -222,9 +232,13 @@ final class RoutePlanningModel: ObservableObject {
                         originQuery: routeMetadata.originQuery,
                         destinationQuery: routeMetadata.destinationQuery,
                         travelMode: routeMetadata.travelMode
-                    ))
-                    elevationDownloadMessage = "30米精细高程已就绪（临时缓存）"
-                    saveCurrentRoute()
+                    )
+                    finePresentation = fineSavedRoute
+                    applyBestAvailableElevation()
+                    elevationDownloadMessage = preferredElevationResolution == .fine
+                        ? "已随地图缩放切换为30米精细高程"
+                        : "30米精细高程已就绪，放大地图自动切换"
+                    persistPresentations()
                 } else {
                     elevationDownloadMessage = elevationSource == .overviewDEM
                         ? "30米数据覆盖不完整，继续使用概览高程"
@@ -257,6 +271,9 @@ final class RoutePlanningModel: ObservableObject {
         route = nil
         routeCoordinates = []
         routeMapLines = []
+        basePresentation = nil
+        overviewPresentation = nil
+        finePresentation = nil
         routeName = "规划真实路线"
         elevationSource = .unavailable
         primaryInstruction = "输入起点和终点后开始规划"
@@ -275,6 +292,40 @@ final class RoutePlanningModel: ObservableObject {
         primaryInstruction = saved.instruction
     }
 
+    func updateMapLatitudeDelta(_ latitudeDelta: Double) {
+        let next = MapElevationResolutionPolicy.preferredResolution(
+            latitudeDelta: latitudeDelta,
+            current: preferredElevationResolution
+        )
+        guard next != preferredElevationResolution else { return }
+        preferredElevationResolution = next
+        applyBestAvailableElevation()
+    }
+
+    private func applyBestAvailableElevation() {
+        let source = MapElevationResolutionPolicy.bestAvailableSource(
+            preferred: preferredElevationResolution,
+            hasOverview: overviewPresentation != nil,
+            hasFine: finePresentation != nil
+        )
+        let selected: SavedRoute? = switch source {
+        case .overviewDEM: overviewPresentation
+        case .offlineDEM: finePresentation
+        case .partialDEM, .unavailable: basePresentation
+        }
+        if let selected { apply(selected) }
+    }
+
+    private func registerSavedPresentation(_ saved: SavedRoute) {
+        switch saved.source {
+        case .offlineDEM: finePresentation = saved
+        case .overviewDEM: overviewPresentation = saved
+        case .partialDEM, .unavailable: basePresentation = saved
+        }
+        if basePresentation == nil { basePresentation = saved }
+        applyBestAvailableElevation()
+    }
+
     private func saveCurrentRoute() {
         guard let route else { return }
         let saved = SavedRoute(
@@ -286,17 +337,38 @@ final class RoutePlanningModel: ObservableObject {
             destinationQuery: destinationQuery.trimmingCharacters(in: .whitespacesAndNewlines),
             travelMode: selectedTravelMode
         )
+        registerSavedPresentation(saved)
+        persistPresentations()
+    }
+
+    private func persistPresentations() {
+        guard let fallback = basePresentation ?? overviewPresentation ?? finePresentation else {
+            return
+        }
+        let archive = SavedRouteArchive(
+            base: basePresentation ?? fallback,
+            overview: overviewPresentation,
+            fine: finePresentation
+        )
         persistenceVersion += 1
         let version = persistenceVersion
         let writer = routeCacheWriter
         Task {
-            await writer.save(saved, to: Self.savedRouteURL, version: version)
+            await writer.save(archive, to: Self.savedRouteURL, version: version)
         }
     }
 
-    private func loadSavedRoute() throws -> SavedRoute {
+    private func loadSavedPresentations() throws -> SavedRouteArchive {
         let data = try Data(contentsOf: Self.savedRouteURL)
-        return try JSONDecoder().decode(SavedRoute.self, from: data)
+        if let archive = try? JSONDecoder().decode(SavedRouteArchive.self, from: data) {
+            return archive
+        }
+        let legacy = try JSONDecoder().decode(SavedRoute.self, from: data)
+        return SavedRouteArchive(
+            base: legacy,
+            overview: legacy.source == .overviewDEM ? legacy : nil,
+            fine: legacy.source == .offlineDEM ? legacy : nil
+        )
     }
 
     nonisolated private static var savedRouteURL: URL {
@@ -391,6 +463,24 @@ final class RoutePlanningModel: ObservableObject {
         }
     }
 
+    struct SavedRouteArchive: Codable, Sendable {
+        let base: SavedRoute
+        let overview: SavedRoute?
+        let fine: SavedRoute?
+
+        func matches(
+            originQuery: String,
+            destinationQuery: String,
+            travelMode: RouteTravelMode
+        ) -> Bool {
+            base.matches(
+                originQuery: originQuery,
+                destinationQuery: destinationQuery,
+                travelMode: travelMode
+            )
+        }
+    }
+
     private enum PlanningError: Error {
         case placeNotFound(String)
         case noRoute
@@ -401,7 +491,7 @@ private actor RouteCacheWriter {
     private var latestVersion = 0
 
     func save(
-        _ route: RoutePlanningModel.SavedRoute,
+        _ route: RoutePlanningModel.SavedRouteArchive,
         to url: URL,
         version: Int
     ) {

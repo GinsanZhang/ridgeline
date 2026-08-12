@@ -68,6 +68,12 @@ struct RidgeNavigationView: View {
             MapCompass()
             MapScaleView()
         }
+        .onMapCameraChange(frequency: .onEnd) { context in
+            planner.updateMapLatitudeDelta(context.region.span.latitudeDelta)
+        }
+        .onAppear {
+            planner.updateMapLatitudeDelta(0.11)
+        }
     }
 
     private var routePlannerCard: some View {
@@ -169,8 +175,7 @@ struct RidgeNavigationView: View {
               let maxLongitude = longitudes.max()
         else { return }
 
-        cameraPosition = .region(
-            MKCoordinateRegion(
+        let region = MKCoordinateRegion(
                 center: CLLocationCoordinate2D(
                     latitude: (minLatitude + maxLatitude) / 2,
                     longitude: (minLongitude + maxLongitude) / 2
@@ -179,8 +184,9 @@ struct RidgeNavigationView: View {
                     latitudeDelta: max((maxLatitude - minLatitude) * 1.35, 0.01),
                     longitudeDelta: max((maxLongitude - minLongitude) * 1.35, 0.01)
                 )
-            )
         )
+        cameraPosition = .region(region)
+        planner.updateMapLatitudeDelta(region.span.latitudeDelta)
     }
 
     private var mapHeader: some View {
