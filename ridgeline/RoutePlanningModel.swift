@@ -211,7 +211,12 @@ final class RoutePlanningModel: ObservableObject {
                 try await elevationTileCache.prepareTiles(
                     named: tileNames,
                     excluding: elevationStore.bundledTileNames
-                )
+                ) { [weak self] progress in
+                    await self?.updateFineDownloadProgress(
+                        progress,
+                        generation: generation
+                    )
+                }
                 guard !Task.isCancelled, routeGeneration == generation else { return }
                 let refreshedStore = HGTElevationStore()
                 elevationStore = refreshedStore
@@ -244,11 +249,22 @@ final class RoutePlanningModel: ObservableObject {
                         ? "30米数据覆盖不完整，继续使用概览高程"
                         : "部分沿线高程暂不可用"
                 }
+            } catch ElevationTileError.routeExceedsCacheCapacity {
+                guard routeGeneration == generation else { return }
+                elevationDownloadMessage = "路线过长，30米数据超过500MiB缓存上限，继续使用概览高程"
             } catch {
                 guard routeGeneration == generation else { return }
                 elevationDownloadMessage = "沿线高程下载失败，地图路线仍可使用"
             }
         }
+    }
+
+    private func updateFineDownloadProgress(
+        _ progress: ElevationDownloadProgress,
+        generation: UUID
+    ) {
+        guard routeGeneration == generation else { return }
+        elevationDownloadMessage = progress.message
     }
 
     private func searchMapItem(query: String) async throws -> MKMapItem {

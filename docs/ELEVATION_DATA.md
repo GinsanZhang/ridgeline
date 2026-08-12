@@ -25,6 +25,7 @@ Acknowledgement does not imply endorsement by NASA, USGS, AWS, or Mapzen.
 - A zoom-9 Terrarium overview (roughly 200–300 m in China) loads first, then Skadi HGT upgrades the route to 1 arc-second (~30 m) sampling.
 - The UI labels the active result as overview or fine elevation; overview values are replaced when complete fine tiles become available.
 - Map zoom selects the presentation automatically: regional views use overview elevation, while spans at or below 1.5° use fine elevation when available; hysteresis avoids rapid switching near the threshold.
+- Fine HGT tiles download with at most three concurrent transfers, 30-second request / 90-second resource timeouts, one retry, and visible completed/total/failed progress.
 - Files are stored in the system Caches directory, not Documents, and may also be evicted by iOS.
 - The app removes files older than 30 days and applies a 500 MiB LRU-style size limit.
 - Clearing or reinstalling the app removes the downloaded elevation cache. The bundled `N31E102` tile remains available.

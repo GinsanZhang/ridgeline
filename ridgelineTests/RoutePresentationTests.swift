@@ -4,6 +4,56 @@ import XCTest
 @testable import ridgeline
 
 final class RoutePresentationTests: XCTestCase {
+    func testFineTileSchedulerLimitsConcurrencyAndReportsMonotonicProgress() async {
+        let probe = DownloadConcurrencyProbe()
+        let scheduler = ConcurrentTileScheduler(maximumConcurrentTasks: 3)
+        var completed: [Int] = []
+
+        await scheduler.run(items: Array(0..<8)) { item in
+            await probe.started()
+            try? await Task.sleep(for: .milliseconds(20))
+            await probe.finished()
+            return item
+        } progress: { count, _, _ in
+            completed.append(count)
+        }
+
+        let maximumActive = await probe.maximumActive
+        XCTAssertLessThanOrEqual(maximumActive, 3)
+        XCTAssertEqual(completed, Array(1...8))
+    }
+
+    func testFineTileSchedulerStopsFeedingQueueAfterCancellation() async {
+        let probe = DownloadConcurrencyProbe()
+        let scheduler = ConcurrentTileScheduler(maximumConcurrentTasks: 2)
+        let task = Task {
+            await scheduler.run(items: Array(0..<20)) { item in
+                await probe.started()
+                try? await Task.sleep(for: .milliseconds(100))
+                await probe.finished()
+                return item
+            } progress: { _, _, _ in }
+        }
+
+        try? await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+        await task.value
+
+        let starts = await probe.totalStarts
+        XCTAssertLessThanOrEqual(starts, 2)
+    }
+
+    func testFineDownloadProgressMessageShowsCompletedAndTotal() {
+        XCTAssertEqual(
+            ElevationDownloadProgress(completed: 3, total: 8, failed: 0).message,
+            "30米精细高程 3/8"
+        )
+        XCTAssertEqual(
+            ElevationDownloadProgress(completed: 8, total: 8, failed: 1).message,
+            "30米精细高程 8/8 · 1块失败"
+        )
+    }
+
     func testMapZoomChoosesElevationResolutionWithHysteresis() {
         XCTAssertEqual(
             MapElevationResolutionPolicy.preferredResolution(
@@ -399,4 +449,20 @@ private struct LegacySavedRoute: Codable {
     let instruction: String
     let originQuery: String
     let destinationQuery: String
+}
+
+private actor DownloadConcurrencyProbe {
+    private var active = 0
+    private(set) var maximumActive = 0
+    private(set) var totalStarts = 0
+
+    func started() {
+        active += 1
+        totalStarts += 1
+        maximumActive = max(maximumActive, active)
+    }
+
+    func finished() {
+        active -= 1
+    }
 }
